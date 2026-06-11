@@ -12,7 +12,10 @@ import json
 import sys
 from pathlib import Path
 
+from llm_sdk import Small_LLM_Model
+from src.decoder import ConstrainedDecoder
 from src.models import FunctionCall, FunctionDefinition, InputPrompt
+from src.prompt import build_prompt
 
 
 def load_json(path: str) -> list[dict]:
@@ -45,7 +48,9 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    parser = argparse.ArgumentParser(description="Function calling with constrained LLM decoding.")
+    parser = argparse.ArgumentParser(
+        description="Function calling with constrained LLM decoding."
+    )
     parser.add_argument(
         "--functions_definition",
         default="data/input/functions_definition.json",
@@ -86,14 +91,39 @@ def main() -> None:
         sys.exit(1)
     print(f"Loaded {len(prompts)} prompt(s).")
 
-    # TODO: run constrained decoding pipeline
+    # Load model and vocabulary once
+    print("Loading model... (this may take a while)")
+    model = Small_LLM_Model()
+
+    vocab_path = model.get_path_to_vocab_file()
+    with open(vocab_path, "r", encoding="utf-8") as f:
+        vocab = json.load(f)
+
+    # Run constrained decoding pipeline
     results: list[FunctionCall] = []
     for prompt in prompts:
         print(f"Processing: {prompt.prompt}")
-        # placeholder — will be replaced with actual pipeline
-        pass
 
-    # Write output
+        prompt_text = build_prompt(functions, prompt.prompt)
+        input_ids = model.encode(prompt_text)[0].tolist()
+
+        decoder = ConstrainedDecoder(model, functions, vocab, user_prompt=prompt.prompt)
+        generated = decoder.generate(input_ids)
+
+        print(f"  -> Generated: {repr(generated)}")
+        try:
+            data = json.loads(generated)
+            result = FunctionCall(
+                prompt=prompt.prompt,
+                name=data["name"],
+                parameters=data["parameters"],
+            )
+            results.append(result)
+            print(f"  -> {result.name}({result.parameters})")
+        except Exception as e:
+            print(f"  -> Error parsing output: {e}", file=sys.stderr)
+
+    # Write output — outside the loop
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
